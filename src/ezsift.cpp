@@ -36,6 +36,8 @@
 #include <limits>
 #include <list>
 
+#include <immintrin.h>
+
 namespace ezsift {
 
 // Init sift parameters
@@ -100,24 +102,45 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
 
     return 0;
 }
-
+inline int block8_ceil(const int x) {
+    return (x+0x07) & (~(unsigned int)0x07);
+}
 // Apply Gaussian row filter to image, then transpose the image.
 int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
                          int gR)
 {
-    float *row_buf = new float[w + gR * 2];
-    float *row_start;
     int elemSize = sizeof(float);
+    float *coef;
+    float *coef_ali;
+    int len_coef=2*gR+1;
+    int _len_coef=block8_ceil(len_coef);
 
+    // printf("_len_coef:%d, gR:%d\n", _len_coef,gR);
+    posix_memalign ((void **)&coef_ali, 32, _len_coef * elemSize);
+    memset(coef_ali, 0, _len_coef * elemSize);
+    memcpy(coef_ali, coef1d, len_coef * elemSize);
+
+    // float *row_buf = new float[w + gR * 2];
+    float *row_buf;
+    int _w = w + gR * 2 + (_len_coef-len_coef);
+    // printf("w:%d, _w:%d\n", w, _w);
+    // posix_memalign ((void**)&row_buf_ali, 32, _w * elemSize);
+    row_buf = (float*)malloc(_w * elemSize);
+
+    float *buf8; 
+    posix_memalign ((void**)&buf8, 32, 8 * elemSize);
+
+    float *row_start;
     float *srcData = src;
     float *dstData = dst + w * h - 1;
-    float partialSum = 0.0f;
-    float *coef = coef1d;
+
     float *prow;
 
     float firstData, lastData;
+    // __m256;
     for (int r = 0; r < h; r++) {
         row_start = srcData + r * w;
+        // memcpy(row_buf + gR, row_start, elemSize * w);
         memcpy(row_buf + gR, row_start, elemSize * w);
         firstData = *(row_start);
         lastData = *(row_start + w - 1);
@@ -128,22 +151,37 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
 
         prow = row_buf;
         dstData = dstData - w * h + 1;
+        __m256 r1,c1,m1,tmp;
         for (int c = 0; c < w; c++) {
-            partialSum = 0.0f;
-            coef = coef1d;
-
-            for (int i = -gR; i <= gR; i++) {
-                partialSum += (*coef++) * (*prow++);
+            // coef = coef_ali;
+            // tmp = _mm256_set1_ps(0);
+            memcpy(buf8, prow, 8 * elemSize);
+            r1 = _mm256_load_ps(buf8);
+            c1 = _mm256_load_ps(coef_ali);
+            tmp = _mm256_mul_ps(r1,c1);
+            for (int i = 8; i < _len_coef; i+=8) {
+                memcpy(buf8, prow+i, 8 * elemSize);
+                r1 = _mm256_load_ps(buf8);
+                c1 = _mm256_load_ps(coef_ali+i);
+                tmp = _mm256_add_ps(tmp,_mm256_mul_ps(r1,c1));
             }
-
-            prow -= 2 * gR;
-            *dstData = partialSum;
+            /* ( x3+x7, x2+x6, x1+x5, x0+x4 ) */
+            const __m128 x128 = _mm_add_ps(_mm256_extractf128_ps(tmp, 1), _mm256_castps256_ps128(tmp));
+            /* ( -, -, x1+x3+x5+x7, x0+x2+x4+x6 ) */
+            const __m128 x64 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
+            /* ( -, -, -, x0+x1+x2+x3+x4+x5+x6+x7 ) */
+            // const __m128 x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
+            /* Conversion to float is a no-op on x86-64 */
+            *dstData = _mm_cvtss_f32(_mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55)));
             dstData += h;
+            prow++;
         }
     }
-    delete[] row_buf;
-    row_buf = nullptr;
-
+    // delete[] row_buf;
+    free(row_buf);
+    free(coef_ali);
+    free(buf8);
+    // row_buf = nullptr;
     return 0;
 }
 
