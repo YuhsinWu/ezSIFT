@@ -167,6 +167,8 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
                          int gR);
 int row_filter_transpose_simd(float *src, float *dst, int w, int h, float *coef1d,
                          int gR);
+int row_filter_transpose_simd2(float *src, float *dst, int w, int h, float *coef1d,
+                         int gR);
 // Build image octaves during the initialization.
 int build_octaves(const Image<unsigned char> &image,
                   std::vector<Image<unsigned char>> &octaves, int firstOctave,

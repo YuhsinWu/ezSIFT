@@ -100,8 +100,8 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
     // row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
     // row_filter_transpose(img_t.data, out_image.data, h, w, &coef1d[0], gR);
     if(gR>5){
-        row_filter_transpose_simd(in_image.data, img_t.data, w, h, &coef1d[0], gR);
-        row_filter_transpose_simd(img_t.data, out_image.data, h, w, &coef1d[0], gR);
+        row_filter_transpose_simd2(in_image.data, img_t.data, w, h, &coef1d[0], gR);
+        row_filter_transpose_simd2(img_t.data, out_image.data, h, w, &coef1d[0], gR);
     }
     else{
         row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
@@ -109,6 +109,7 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
     }
     return 0;
 }
+
 int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
                          int gR)
 {
@@ -154,6 +155,156 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
 }
 inline int block8_ceil(const int x) {
     return (x+0x07) & (~(unsigned int)0x07);
+}
+inline __m256 HorizontalSums(__m256 v0, __m256 v1, __m256 v2, __m256 v3, __m256 v4, __m256 v5, __m256 v6, __m256 v7)
+{
+    const __m256 s01 = _mm256_hadd_ps(v0, v1);
+    const __m256 s23 = _mm256_hadd_ps(v2, v3);
+    const __m256 s45 = _mm256_hadd_ps(v4, v5);
+    const __m256 s67 = _mm256_hadd_ps(v6, v7);
+    const __m256 s0123 = _mm256_hadd_ps(s01, s23);
+    const __m256 s4556 = _mm256_hadd_ps(s45, s67);
+
+    // inter-lane shuffle
+    v0 = _mm256_blend_ps(s0123, s4556, 0xF0);
+    v1 = _mm256_permute2f128_ps(s0123, s4556, 0x21);
+
+    return _mm256_add_ps(v0, v1);
+}
+inline __m256 __mm256_conv(float* buf8, float* prow, float *coef_ali, int _len_coef, int elemSize){
+    __m256 r1,c1,v0;
+    memcpy(buf8, prow, 8 * elemSize);
+    r1 = _mm256_load_ps(buf8);
+    c1 = _mm256_load_ps(coef_ali);
+    v0 = _mm256_mul_ps(r1,c1);
+    for (int i = 8; i < _len_coef; i+=8) {
+        memcpy(buf8, prow+i, 8 * elemSize);
+        r1 = _mm256_load_ps(buf8);
+        c1 = _mm256_load_ps(coef_ali+i);
+        v0 = _mm256_add_ps(v0,_mm256_mul_ps(r1,c1));
+    }
+    return v0;
+}
+int row_filter_transpose_simd2(float *src, float *dst, int w, int h, float *coef1d,
+                         int gR)
+{
+    int elemSize = sizeof(float);
+    float *coef;
+    float *coef_ali;
+    int len_coef=2*gR+1;
+    int _len_coef=block8_ceil(len_coef);
+
+    // printf("_len_coef:%d, gR:%d\n", _len_coef,gR);
+    posix_memalign ((void **)&coef_ali, 32, _len_coef * elemSize);
+    memset(coef_ali, 0, _len_coef * elemSize);
+    memcpy(coef_ali, coef1d, len_coef * elemSize);
+
+    // float *row_buf = new float[w + gR * 2];
+    float *row_buf;
+    int _w = w + gR * 2 + (_len_coef-len_coef);
+    // printf("w:%d, _w:%d\n", w, _w);
+    // posix_memalign ((void**)&row_buf_ali, 32, _w * elemSize);
+    row_buf = (float*)malloc(_w * elemSize);
+
+    float *buf8; 
+    posix_memalign ((void**)&buf8, 32, 8 * elemSize);
+
+    float *row_start;
+    float *srcData = src;
+    float *dstData = dst + w * h - 1;
+
+    float *prow;
+
+    float firstData, lastData;
+    // __m256;
+    for (int r = 0; r < h; r++) {
+        row_start = srcData + r * w;
+        // memcpy(row_buf + gR, row_start, elemSize * w);
+        memcpy(row_buf + gR, row_start, elemSize * w);
+        firstData = *(row_start);
+        lastData = *(row_start + w - 1);
+        for (int i = 0; i < gR; i++) {
+            row_buf[i] = firstData;
+            row_buf[i + w + gR] = lastData;
+        }
+
+        prow = row_buf;
+        dstData = dstData - w * h + 1;
+        __m256 r1,c1,m1,tmp;
+        __m256 v0,v1,v2,v3,v4,v5,v6,v7;
+        int c;
+        for (c = 0; c + 8 < w; c+=8) {
+            // coef = coef_ali;
+            // // tmp = _mm256_set1_ps(0);
+
+            // memcpy(buf8, prow, 8 * elemSize);
+            // r1 = _mm256_load_ps(buf8);
+            // c1 = _mm256_load_ps(coef_ali);
+            // v0 = _mm256_mul_ps(r1,c1);
+            // for (int i = 8; i < _len_coef; i+=8) {
+            //     memcpy(buf8, prow+i, 8 * elemSize);
+            //     r1 = _mm256_load_ps(buf8);
+            //     c1 = _mm256_load_ps(coef_ali+i);
+            //     v0 = _mm256_add_ps(v0,_mm256_mul_ps(r1,c1));
+            // }
+            v0 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v1 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v2 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v3 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v4 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v5 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v6 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            v7 =  __mm256_conv(buf8, prow, coef_ali, _len_coef, elemSize);
+            prow++;
+            const __m256 res = HorizontalSums( v0,  v1,  v2,  v3,  v4,  v5,  v6,  v7);
+            
+            _mm256_store_ps(buf8, res);
+
+            // *dstData = _mm_cvtss_f32(_mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55)));
+            
+            for(int idx=0;idx<8;idx++){
+                *dstData=buf8[idx];
+                dstData += h;
+            }
+            
+        }
+        for(;c<w;c++){
+            memcpy(buf8, prow, 8 * elemSize);
+            r1 = _mm256_load_ps(buf8);
+            c1 = _mm256_load_ps(coef_ali);
+            tmp = _mm256_mul_ps(r1,c1);
+            for (int i = 8; i < _len_coef; i+=8) {
+                memcpy(buf8, prow+i, 8 * elemSize);
+                r1 = _mm256_load_ps(buf8);
+                c1 = _mm256_load_ps(coef_ali+i);
+                tmp = _mm256_add_ps(tmp,_mm256_mul_ps(r1,c1));
+            }
+            /* ( x3+x7, x2+x6, x1+x5, x0+x4 ) */
+            const __m128 x128 = _mm_add_ps(_mm256_extractf128_ps(tmp, 1), _mm256_castps256_ps128(tmp));
+            /* ( -, -, x1+x3+x5+x7, x0+x2+x4+x6 ) */
+            const __m128 x64 = _mm_add_ps(x128, _mm_movehl_ps(x128, x128));
+            /* ( -, -, -, x0+x1+x2+x3+x4+x5+x6+x7 ) */
+            // const __m128 x32 = _mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55));
+            /* Conversion to float is a no-op on x86-64 */
+            *dstData = _mm_cvtss_f32(_mm_add_ss(x64, _mm_shuffle_ps(x64, x64, 0x55)));
+            dstData += h;
+            prow++;           
+        }
+
+    }
+    // delete[] row_buf;
+    free(row_buf);
+    free(coef_ali);
+    free(buf8);
+    // row_buf = nullptr;
+    return 0;
 }
 // Apply Gaussian row filter to image, then transpose the image.
 int row_filter_transpose_simd(float *src, float *dst, int w, int h, float *coef1d,
