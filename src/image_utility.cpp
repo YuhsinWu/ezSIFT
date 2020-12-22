@@ -22,6 +22,8 @@
 #include <ctype.h>
 #include <limits>
 
+#include <arm_neon.h>
+
 namespace ezsift {
 
 int read_pgm(const char *filename, unsigned char *&data, int &w, int &h)
@@ -401,20 +403,30 @@ int match_keypoints(std::list<SiftKeypoint> &kpt_list1,
         int c1 = (int)kpt1->c;
 
         float *descr1 = kpt1->descriptors;
+         
         float score1 = (std::numeric_limits<float>::max)(); // highest score
         float score2 = (std::numeric_limits<float>::max)(); // 2nd highest score
 
+        float32_t *mulResult = new float32_t[4];
         // Position of the matched feature.
         int r2 = 0, c2 = 0;
         for (kpt2 = kpt_list2.begin(); kpt2 != kpt_list2.end(); kpt2++) {
             float score = 0;
             float *descr2 = kpt2->descriptors;
-            float dif;
+            float32x4_t tmp_s = vdupq_n_f32(0);
+            // float dif;
             for (int i = 0; i < DEGREE_OF_DESCRIPTORS; i++) {
-                dif = descr1[i] - descr2[i];
-                score += dif * dif;
+                float32x4_t d1 = vld1q_f32(descr1+i);
+                float32x4_t d2 = vld1q_f32(descr2+i);
+                float32x4_t s1 = vsubq_f32(d1,d2);                
+                tmp_s = vaddq_f32(tmp_s, vmulq_f32(s1,s1));
+                // dif = descr1[i] - descr2[i];
+                // score += dif * dif;
             }
 
+            vst1q_f32(mulResult,tmp_s);
+            score = mulResult[0]+mulResult[1]+mulResult[2]+mulResult[3];
+            
             if (score < score1) {
                 score2 = score1;
                 score1 = score;
