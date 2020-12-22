@@ -396,7 +396,7 @@ int match_keypoints(std::list<SiftKeypoint> &kpt_list1,
 {
     std::list<SiftKeypoint>::iterator kpt1;
     std::list<SiftKeypoint>::iterator kpt2;
-
+    float32_t *mulResult = (float32_t*)malloc(4*sizeof(float32_t));
     for (kpt1 = kpt_list1.begin(); kpt1 != kpt_list1.end(); kpt1++) {
         // Position of the matched feature.
         int r1 = (int)kpt1->r;
@@ -407,15 +407,15 @@ int match_keypoints(std::list<SiftKeypoint> &kpt_list1,
         float score1 = (std::numeric_limits<float>::max)(); // highest score
         float score2 = (std::numeric_limits<float>::max)(); // 2nd highest score
 
-        float32_t *mulResult = new float32_t[4];
+        
         // Position of the matched feature.
         int r2 = 0, c2 = 0;
         for (kpt2 = kpt_list2.begin(); kpt2 != kpt_list2.end(); kpt2++) {
             float score = 0;
             float *descr2 = kpt2->descriptors;
-            float32x4_t tmp_s = vdupq_n_f32(0);
+            float32x4_t tmp_s = vdupq_n_f32(0.f);
             // float dif;
-            for (int i = 0; i < DEGREE_OF_DESCRIPTORS; i++) {
+            for (int i = 0; i < DEGREE_OF_DESCRIPTORS; i+=4) {
                 float32x4_t d1 = vld1q_f32(descr1+i);
                 float32x4_t d2 = vld1q_f32(descr2+i);
                 float32x4_t s1 = vsubq_f32(d1,d2);                
@@ -426,7 +426,8 @@ int match_keypoints(std::list<SiftKeypoint> &kpt_list1,
 
             vst1q_f32(mulResult,tmp_s);
             score = mulResult[0]+mulResult[1]+mulResult[2]+mulResult[3];
-            
+            // if(kpt1==kpt_list1.begin()&&kpt2 == kpt_list2.begin())
+            // printf("%f\n", score);
             if (score < score1) {
                 score2 = score1;
                 score1 = score;
@@ -465,7 +466,7 @@ int match_keypoints(std::list<SiftKeypoint> &kpt_list1,
         match_idx++;
     }
 #endif
-
+    free(mulResult);
     return 0;
 }
 
