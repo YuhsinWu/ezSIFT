@@ -100,8 +100,8 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
     // row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
     // row_filter_transpose(img_t.data, out_image.data, h, w, &coef1d[0], gR);
     if(gR>5){
-        row_filter_transpose_simd2(in_image.data, img_t.data, w, h, &coef1d[0], gR);
-        row_filter_transpose_simd2(img_t.data, out_image.data, h, w, &coef1d[0], gR);
+        row_filter_transpose_simd(in_image.data, img_t.data, w, h, &coef1d[0], gR);
+        row_filter_transpose_simd(img_t.data, out_image.data, h, w, &coef1d[0], gR);
     }
     else{
         row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
