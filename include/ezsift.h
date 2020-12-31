@@ -165,10 +165,11 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
 // Row filter and then transpose
 int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
                          int gR);
-int row_filter_transpose_simd(float *src, float *dst, int w, int h, float *coef1d,
-                         int gR);
-int row_filter_transpose_simd2(float *src, float *dst, int w, int h, float *coef1d,
-                         int gR);
+int row_filter_simd(float const *p_column_done_extended_input,float *p_output, 
+    int width, int height,float const *p_kernel_row, int gR);
+int column_filter_simd(float *p_extended_input, float *p_column_done_extended_output, 
+    int weight, int height, float *filter, int gR);
+
 // Build image octaves during the initialization.
 int build_octaves(const Image<unsigned char> &image,
                   std::vector<Image<unsigned char>> &octaves, int firstOctave,
