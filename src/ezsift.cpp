@@ -174,11 +174,19 @@ int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
     return 0;
 }
 int column_filter_simd(float *p_extended_input, float *p_column_done_extended_output, 
-    int width, int height, float *filter, int gR){
+    int width, int height, float *p_kernel_column, int gR){
     int gL=2*gR+1;
     int extended_width = width + 2 * gR;
-    int step_size = sizeof(__m128) / sizeof(float);
-    int steps = width / step_size;
+    
+    int steps_avx, step_size_avx;
+    int steps_sse, step_size_sse;
+    int remainder_avx;
+    step_size_avx = sizeof(__m256) / sizeof(float);
+    steps_avx = width / step_size_avx;   
+    remainder_avx = width % steps_avx;
+
+    step_size_sse = sizeof(__m128) / sizeof(float);
+    steps_sse = remainder_avx / step_size_sse;
 
     memset_sse2(p_column_done_extended_output, 0,
         extended_width * height * sizeof(float));
@@ -193,40 +201,58 @@ int column_filter_simd(float *p_extended_input, float *p_column_done_extended_ou
             float *p_mov_output;
 
             float kernel_element;
+            __m256 m256_kernel_element;
             __m128 m128_kernel_element;
 
             int x;
             x = gR;
 
-            kernel_element = filter[jj];
+            kernel_element = p_kernel_column[jj];
+
+            m256_kernel_element = _mm256_set1_ps(kernel_element);
             m128_kernel_element = _mm_set_ps1(kernel_element);
 
-            p_mov_extended_input = 
+            p_mov_extended_input =
                 (float*)p_extended_input + y_mul_input_width + x;
 
-            p_mov_output = 
+            p_mov_output =
                 (float*)p_column_done_extended_output + j*extended_width + x;
 
-            for (i = 0; i < steps; i++) {
-                __m128 m_temp0, m_temp1, m_temp2, m_temp3;
+            for (i = 0; i < steps_avx; i++) {
+                __m256 m256_temp0, m256_temp1, m256_temp2, m256_temp3;
 
-                m_temp0 = _mm_loadu_ps(p_mov_extended_input);
-                m_temp1 = _mm_mul_ps(m_temp0, m128_kernel_element);
+                m256_temp0 = _mm256_loadu_ps(p_mov_extended_input);
+                m256_temp1 = _mm256_mul_ps(m256_temp0, m256_kernel_element);
 
-                m_temp2 = _mm_loadu_ps(p_mov_output);
+                m256_temp2 = _mm256_loadu_ps(p_mov_output);
+                m256_temp3 = _mm256_add_ps(m256_temp1, m256_temp2);
+                _mm256_storeu_ps(p_mov_output, m256_temp3);
 
-                m_temp3 = _mm_add_ps(m_temp1, m_temp2);
+                p_mov_extended_input += step_size_avx;
+                p_mov_output += step_size_avx;
+            }/*for avx*/
+            for (i = 0; i < steps_sse; i++) {
+                __m128 m128_temp0, m128_temp1, m128_temp2, m128_temp3;
 
-                _mm_storeu_ps(p_mov_output, m_temp3);
-                p_mov_extended_input += step_size;
-                p_mov_output += step_size;                
-            }/*for width*/
-            for (i = steps*step_size; i < width; i++) {
-                p_mov_output[0] += 
+                m128_temp0 = _mm_loadu_ps(p_mov_extended_input);
+                m128_temp1 = _mm_mul_ps(m128_temp0, m128_kernel_element);
+
+                m128_temp2 = _mm_loadu_ps(p_mov_output);
+                m128_temp3 = _mm_add_ps(m128_temp1, m128_temp2);
+
+                _mm_storeu_ps(p_mov_output, m128_temp3);
+                p_mov_extended_input += step_size_sse;
+                p_mov_output += step_size_sse;
+            }/*for sse*/            
+            i = steps_avx*step_size_avx
+                + step_size_sse * steps_sse;
+
+            for (; i < width; i++) {
+                p_mov_output[0] +=
                     p_mov_extended_input[0] * kernel_element;
                 p_mov_extended_input += 1;
                 p_mov_output += 1;
-            }/*remainder*/
+            }/*remainder */
 
             y_mul_input_width += extended_width;
         }/*for kernel*/
@@ -238,28 +264,49 @@ int column_filter_simd(float *p_extended_input, float *p_column_done_extended_ou
 int row_filter_simd(float const *p_column_done_extended_input,float *p_output, 
     int width, int height,float const *p_kernel_row, int gR)
 {
+    int i, j;
     int gL=gR*2+1;
     int extended_width = width + 2 * gR;
-    int step_size = sizeof(__m128) / sizeof(float);
-    int steps = width / step_size;
-    memset_sse2(p_output, 0, width*height*sizeof(float));
+    int step_size_avx, steps_avx;
+    int remainder_avx;
+
+    int step_size_sse, steps_sse;
+    int remainder_sse;
+
+    step_size_avx = sizeof(__m256) / sizeof(float);
+    steps_avx = width / step_size_avx;
+
+ 
+    remainder_avx = width % step_size_avx;
+
+    step_size_sse = sizeof(__m128) / sizeof(float);
+    steps_sse = remainder_avx / step_size_sse;
+    remainder_sse = remainder_avx % step_size_sse;
+
+
+    memset_sse2(p_output, 0, width*height * sizeof(float));
 
     {
-        int y_mul_input_width=0;
-        int i, j;
+        int y_mul_input_width;
+        y_mul_input_width = 0;
 
         for (j = 0; j < height; j++) {
             int ii;
+
             for (ii = 0; ii < gL; ii++) {
-                
-                float kernel_element;
-                __m128 m128_kernel_element;
 
                 float *p_mov_extended_input;
                 float *p_mov_output;
+
+                float kernel_element;
+                __m256 m256_kernel_element;
+                __m128 m128_kernel_element;
+
                 int x;
 
                 kernel_element = p_kernel_row[ii];
+
+                m256_kernel_element = _mm256_set1_ps(kernel_element);
                 m128_kernel_element = _mm_set_ps1(kernel_element);
 
                 x = ii;
@@ -267,20 +314,40 @@ int row_filter_simd(float const *p_column_done_extended_input,float *p_output,
                     (float*)p_column_done_extended_input + y_mul_input_width + x;
                 p_mov_output = (float*)p_output + j*width;
 
-                for (i = 0; i < steps; i++) {
-                    __m128 m_temp0, m_temp1, m_temp2, m_temp3;
+                for (i = 0; i < steps_avx; i++) {
+                    __m256 m256_temp0, m256_temp1, m256_temp2, m256_temp3;
 
-                    m_temp0 = _mm_loadu_ps(p_mov_extended_input);
-                    m_temp1 = _mm_mul_ps(m_temp0, m128_kernel_element);
+                    m256_temp0 = _mm256_loadu_ps(p_mov_extended_input);
+                    m256_temp1 = _mm256_mul_ps(m256_temp0, m256_kernel_element);
 
-                    m_temp2 = _mm_loadu_ps(p_mov_output);
-                    m_temp3 = _mm_add_ps(m_temp1, m_temp2);
+                    m256_temp2 = _mm256_loadu_ps(p_mov_output);
+                    m256_temp3 = _mm256_add_ps(m256_temp1, m256_temp2);
 
-                    _mm_storeu_ps(p_mov_output, m_temp3);
-                    p_mov_extended_input += step_size;
-                    p_mov_output += step_size;                    
-                }/*for width*/
-                for (i = steps*step_size; i < steps; i++) {
+                    _mm256_storeu_ps(p_mov_output, m256_temp3);
+                    p_mov_extended_input += step_size_avx;
+                    p_mov_output += step_size_avx;
+                }/*for avx*/
+
+                for (i = 0; i < steps_sse; i++) {
+
+                    __m128 m128_temp0, m128_temp1, m128_temp2, m128_temp3;
+
+                    m128_temp0 = _mm_loadu_ps(p_mov_extended_input);
+                    m128_temp1 = _mm_mul_ps(m128_temp0, m128_kernel_element);
+
+                    m128_temp2 = _mm_loadu_ps(p_mov_output);
+                    m128_temp3 = _mm_add_ps(m128_temp1, m128_temp2);
+
+                    _mm_storeu_ps(p_mov_output, m128_temp3);
+                    p_mov_extended_input += step_size_sse;
+                    p_mov_output += step_size_sse;
+                }/*for sse*/
+
+
+                i = steps_avx*step_size_avx
+                    + step_size_sse * steps_sse;
+
+                for (; i < width; i++) {
                     float product;
 
                     product = kernel_element
@@ -289,13 +356,13 @@ int row_filter_simd(float const *p_column_done_extended_input,float *p_output,
                     p_mov_output[0] += product;
                     p_mov_extended_input += 1;
                     p_mov_output += 1;
-                }/*for remainder*/
-            }/*kernel*/
-            
+                }/*remainder*/
+
+            }/*for kernel*/
+
             y_mul_input_width += extended_width;
         }/*for j*/
-    }/*local variable*/
-
+    }
     return 0;
 }
 int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,

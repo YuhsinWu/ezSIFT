@@ -168,7 +168,7 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
 int row_filter_simd(float const *p_column_done_extended_input,float *p_output, 
     int width, int height,float const *p_kernel_row, int gR);
 int column_filter_simd(float *p_extended_input, float *p_column_done_extended_output, 
-    int weight, int height, float *filter, int gR);
+    int weight, int height, float *p_kernel_column, int gR);
 
 // Build image octaves during the initialization.
 int build_octaves(const Image<unsigned char> &image,
