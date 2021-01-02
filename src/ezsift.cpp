@@ -87,30 +87,7 @@ int build_octaves(const Image<unsigned char> &image,
     }
     return 0;
 }
-
-// Improved Gaussian Blurring Function
-int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
-                  std::vector<float> coef1d)
-{
-    int w = in_image.w;
-    int h = in_image.h;
-    int gR = static_cast<int>(coef1d.size()) / 2;
-
-    Image<float> img_t(h, w);
-    // row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
-    // row_filter_transpose(img_t.data, out_image.data, h, w, &coef1d[0], gR);
-    if(gR>5){
-        row_filter_transpose_simd(in_image.data, img_t.data, w, h, &coef1d[0], gR);
-        row_filter_transpose_simd(img_t.data, out_image.data, h, w, &coef1d[0], gR);
-    }
-    else{
-        row_filter_transpose(in_image.data, img_t.data, w, h, &coef1d[0], gR);
-        row_filter_transpose(img_t.data, out_image.data, h, w, &coef1d[0], gR);
-    }
-    return 0;
-}
-
-int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
+int row_filter(float *src, float *dst, int w, int h, float *coef1d,
                          int gR)
 {
     float *row_buf = new float[w + gR * 2];
@@ -118,11 +95,13 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
     int elemSize = sizeof(float);
 
     float *srcData = src;
-    float *dstData = dst + w * h - 1;
+    float* __restrict dstData;
     float partialSum = 0.0f;
     float *coef = coef1d;
     float *prow;
 
+    memset(dst,0,w*h*sizeof(float));
+    int gL=gR*2+1;
     float firstData, lastData;
     for (int r = 0; r < h; r++) {
         row_start = srcData + r * w;
@@ -134,20 +113,133 @@ int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
             row_buf[i + w + gR] = lastData;
         }
 
-        prow = row_buf;
-        dstData = dstData - w * h + 1;
-        for (int c = 0; c < w; c++) {
-            partialSum = 0.0f;
-            coef = coef1d;
-
-            for (int i = -gR; i <= gR; i++) {
-                partialSum += (*coef++) * (*prow++);
+        coef = coef1d;
+        dstData = dst + r*w;
+        for (int i = 0; i < gL; i++) {
+            prow = row_buf + i;
+            for (int c = 0; c < w; c++) {                
+                *dstData += (*coef) * (*prow++);
+                dstData ++;
             }
-
-            prow -= 2 * gR;
-            *dstData = partialSum;
-            dstData += h;
+            coef++;
+            dstData -= w;
         }
+    }
+    delete[] row_buf;
+    row_buf = nullptr;
+    return 0;
+}
+int col_filter(float *src, float *dst, int w, int h, float *coef1d,
+                         int gR)
+{
+    // float *row_buf = new float[w + gR * 2];
+    // float *row_start;
+    int elemSize = sizeof(float);
+
+    float *srcData = src;
+    float* __restrict dstData;
+    // float partialSum = 0.0f;
+    float *coef = coef1d;
+    // float *prow;
+
+    memset(dst,0,w*h*sizeof(float));
+    float* ex_src = (float*)malloc(w * (h+2*gR) * sizeof(float));
+    float *p_exsrc=ex_src;
+    for(int i=0;i<gR;i++){
+        memcpy(p_exsrc, src, w*sizeof(float));
+        memcpy(p_exsrc + w*h, src + (w-1)*h, w*sizeof(float));
+        p_exsrc+=w;
+    }
+
+    memcpy(ex_src+(gR*w),src, w*h*sizeof(float));
+
+    int gL=gR*2+1;
+    p_exsrc=ex_src;
+    for (int r = 0; r < h; r++) {
+        coef = coef1d;
+        dstData = dst + r*w;
+        p_exsrc = ex_src+ r*w;
+        for (int i = 0; i < gL; i++) {
+            for (int c = 0; c < w; c++) {                
+                *dstData += (*coef) * (*p_exsrc++);
+                dstData ++;
+            }
+            coef++;
+            dstData -= w;
+        }
+    }
+    free(ex_src);
+    return 0;
+}
+// Improved Gaussian Blurring Function
+int gaussian_blur(const Image<float> &in_image, Image<float> &out_image,
+                  std::vector<float> coef1d)
+{
+    int w = in_image.w;
+    int h = in_image.h;
+    int gR = static_cast<int>(coef1d.size()) / 2;
+
+    Image<float> img_t(w, h);
+    col_filter(in_image.data, img_t.data, w, h, &coef1d[0], gR);
+    row_filter(img_t.data, out_image.data, w, h, &coef1d[0], gR);
+
+
+    return 0;
+}
+
+int row_filter_transpose(float *src, float *dst, int w, int h, float *coef1d,
+                         int gR)
+{
+    float *row_buf = new float[w + gR * 2];
+    float *row_start;
+    int elemSize = sizeof(float);
+
+    float *srcData = src;
+    float* __restrict dstData;
+    float partialSum = 0.0f;
+    float *coef = coef1d;
+    float *prow;
+
+    memset(dst,0,w*h*sizeof(float));
+    int gL=gR*2+1;
+    float firstData, lastData;
+    for (int r = 0; r < h; r++) {
+        row_start = srcData + r * w;
+        memcpy(row_buf + gR, row_start, elemSize * w);
+        firstData = *(row_start);
+        lastData = *(row_start + w - 1);
+        for (int i = 0; i < gR; i++) {
+            row_buf[i] = firstData;
+            row_buf[i + w + gR] = lastData;
+        }
+
+        coef = coef1d;
+        dstData = dst + r;
+        for (int i = 0; i < gL; i++) {
+            // partialSum += (*coef++) * (*prow++);
+            prow = row_buf + i;
+            for (int c = 0; c < w; c++) {                
+                *dstData += (*coef) * (*prow++);
+                dstData += h;
+            }
+            coef++;
+            dstData = dst + r;
+        }
+
+        // prow = row_buf;
+        // dstData = dstData - w * h + 1;
+        // for (int c = 0; c < w; c++) {
+        //     partialSum = 0.0f;
+        //     coef = coef1d;
+
+        //     for (int i = -gR; i <= gR; i++) {
+        //         partialSum += (*coef++) * (*prow++);
+        //     }
+
+        //     prow -= 2 * gR;
+        //     *dstData = partialSum;
+        //     dstData += h;
+        // }
     }
     delete[] row_buf;
     row_buf = nullptr;
